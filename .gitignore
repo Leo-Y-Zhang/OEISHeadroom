@@ -5,3 +5,9 @@ build/
 dist/
 .ruff_cache/
 .oeis-cache/
+
+# Submission working files live outside the repo, in Documents\OEIS-submissions.
+# They are notes to the author about their own drafts, not repository content.
+SUBMISSION.md
+make_submission.py
+extensions.json

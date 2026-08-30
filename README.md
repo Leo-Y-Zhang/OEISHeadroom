@@ -130,20 +130,6 @@ all. That was checked against the authoritative `%S`/`%T` lines before the
 filter was changed: the data is real, the assumption was wrong. Monotonicity is
 a criterion, not a preference. Both mistakes have tests named after them.
 
-## Submitting these to the OEIS
-
-[SUBMISSION.md](SUBMISSION.md) holds a copy-paste block per sequence: the DATA
-line, the line to **append** to EXTENSIONS, and a short note for the submission
-box. Regenerate it with `python make_submission.py` after any change to
-`sequences/`.
-
-Two traps it handles rather than leaves to the submitter. The DATA line is
-truncated to the OEIS's ~260 character limit, because an overflowing one is
-silently mangled by the form. And the EXTENSIONS field **accumulates** -- A337114
-already credits Bert Dobbelaere for a(13)-a(24), so the pack prints the existing
-lines with a keep-this warning, and the generator exits rather than claim a
-sequence has no prior extensions when it cannot confirm that.
-
 ## What this does not claim
 
 **Nothing here has been submitted to the OEIS.** The terms are computed,

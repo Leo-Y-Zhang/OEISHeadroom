@@ -38,4 +38,4 @@ ignore = ["E501"]
 # code whose only guarantee is that it currently computes the right numbers
 # trades a real property for a cosmetic one, so the rule is scoped off here
 # rather than the files being rewritten.
-"sequences/*.py" = ["UP031"]
+"sequences/*.py" = ["UP031", "B905"]

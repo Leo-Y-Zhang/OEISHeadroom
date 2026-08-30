@@ -12,9 +12,9 @@ enough that the wall was patience, not difficulty -- and then attacks some.
 
 ## Results
 
-**6 of 6 implementations reproduce every term the OEIS
-publishes** (135 published values recomputed from scratch).
-6 sequences were extended, by **113 new terms** in total.
+**7 of 7 implementations reproduce every term the OEIS
+publishes** (153 published values recomputed from scratch).
+7 sequences were extended, by **123 new terms** in total.
 
 | sequence | published | new | total | what it counts |
 |---|---:|---:|---:|---|
@@ -24,6 +24,7 @@ publishes** (135 published values recomputed from scratch).
 | [A325555](https://oeis.org/A325555) | 25 | **+16** | 41 | Number of necklace compositions of n with distinct differences up to sign. |
 | [A347414](https://oeis.org/A347414) | 25 | **+13** | 38 | Number of partitions of n which occur as the automorphism orbit sizes of a... |
 | [A337114](https://oeis.org/A337114) | 24 | **+12** | 36 | Number of distinct node-partitions of n-vertex trees. |
+| [A353403](https://oeis.org/A353403) | 18 | **+10** | 28 | Number of compositions of n whose own reversed run-lengths are a subsequen... |
 
 Published data snapshotted from OEIS on 2026-08-30.
 
@@ -63,6 +64,12 @@ Published data snapshotted from OEIS on 2026-08-30.
 
 ```
 2231, 2821, 3399, 4308, 5096, 6457, 7654, 9516, 11313, 14004, 16444, 20411, 23931
+```
+
+**A353403** -- a(18)..a(27):
+
+```
+4588, 8270, 14381, 25491, 45054, 79902, 141055, 249741, 442169, 783293
 ```
 
 

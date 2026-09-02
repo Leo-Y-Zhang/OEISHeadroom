@@ -132,10 +132,12 @@ a criterion, not a preference. Both mistakes have tests named after them.
 
 ## What this does not claim
 
-**Nothing here has been submitted to the OEIS.** The terms are computed,
-verified against the published data, and published here for anyone to check.
-Submitting them is a separate act requiring a human author, and the OEIS asks
-for editorial correspondence to be written by the person submitting.
+**This repository is not the OEIS.** The terms are computed, verified against
+the published data, and published here for anyone to check. Submitting them was
+a separate act by a human author: all seven extensions were submitted and
+reviewed by OEIS editors, and all seven are now published there (the last,
+A337114 a(25)-a(36), on 2 September 2026). The OEIS entries are the record;
+this repository is the evidence behind them.
 
 A verified extension is a claim about *a program agreeing with the OEIS on every
 value the OEIS states, and continuing*. It is not a proof. An independent

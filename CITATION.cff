@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use this software, or cite the values it establishes, please cite the archived version below."
+title: "OEISHeadroom: finding OEIS sequences with computational headroom, and extending seven of them"
+abstract: >-
+  A filter over all 399,277 OEIS sequences for counting sequences whose published
+  data stops at a value small enough that the wall was patience rather than
+  difficulty, and independent implementations of seven of them. Each
+  implementation is checked by a default-deny gate that first recomputes every
+  term the OEIS already publishes, and only then reports what lies past them:
+  123 new terms across A319381, A323586, A325555, A325556, A337114, A347414 and
+  A353403.
+type: software
+authors:
+  - family-names: Zhang
+    given-names: Leo Y.
+    orcid: "https://orcid.org/0009-0008-1145-7969"
+repository-code: "https://github.com/Leo-Y-Zhang/OEISHeadroom"
+license-url: "https://github.com/Leo-Y-Zhang/OEISHeadroom/blob/main/LICENSE"
+# Fill these three in from the Zenodo record created by the first release, then
+# commit. Use the concept DOI (the one that always resolves to the newest
+# version), not the version DOI of this one release.
+# version: "1.0.0"
+# date-released: "2026-09-21"
+# doi: 10.5281/zenodo.XXXXXXXX
+# url: "https://doi.org/10.5281/zenodo.XXXXXXXX"
+keywords:
+  - integer sequences
+  - OEIS
+  - enumeration
+  - combinatorics
+  - verification

@@ -1,0 +1,64 @@
+{
+ "upload_type": "software",
+ "title": "OEISHeadroom: finding OEIS sequences with computational headroom, and extending seven of them",
+ "description": "A filter over all 399,277 OEIS sequences for counting sequences whose published data stops at a value small enough that the wall was patience rather than difficulty, and independent implementations of seven of them. Each implementation is checked by a default-deny gate that first recomputes every term the OEIS already publishes -- 153 values, snapshotted before submission and frozen there -- and only then reports what lies past them. 123 new terms across A319381, A323586, A325555, A325556, A337114, A347414 and A353403.",
+ "creators": [
+  {
+   "name": "Zhang, Leo Y.",
+   "orcid": "0009-0008-1145-7969"
+  }
+ ],
+ "keywords": [
+  "integer sequences",
+  "OEIS",
+  "enumeration",
+  "combinatorics",
+  "plane partitions",
+  "necklace compositions",
+  "verification"
+ ],
+ "access_right": "open",
+ "license": "other-closed",
+ "related_identifiers": [
+  {
+   "identifier": "https://oeis.org/A319381",
+   "relation": "isSupplementTo",
+   "scheme": "url"
+  },
+  {
+   "identifier": "https://oeis.org/A323586",
+   "relation": "isSupplementTo",
+   "scheme": "url"
+  },
+  {
+   "identifier": "https://oeis.org/A325555",
+   "relation": "isSupplementTo",
+   "scheme": "url"
+  },
+  {
+   "identifier": "https://oeis.org/A325556",
+   "relation": "isSupplementTo",
+   "scheme": "url"
+  },
+  {
+   "identifier": "https://oeis.org/A337114",
+   "relation": "isSupplementTo",
+   "scheme": "url"
+  },
+  {
+   "identifier": "https://oeis.org/A347414",
+   "relation": "isSupplementTo",
+   "scheme": "url"
+  },
+  {
+   "identifier": "https://oeis.org/A353403",
+   "relation": "isSupplementTo",
+   "scheme": "url"
+  },
+  {
+   "identifier": "https://github.com/Leo-Y-Zhang/OEISHeadroom",
+   "relation": "isSupplementTo",
+   "scheme": "url"
+  }
+ ]
+}

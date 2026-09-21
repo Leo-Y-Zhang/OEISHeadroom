@@ -11,3 +11,11 @@ dist/
 SUBMISSION.md
 make_submission.py
 extensions.json
+
+# b-files are generated from the verified terms by `oeisheadroom bfile`, on
+# demand, for uploading to the OEIS. They are submission payload rather than
+# repository content, and regenerating beats storing: a committed b-file is a
+# list of numbers that can go stale against the code, which is the failure the
+# rest of this repository is built to prevent. `bfile --check` is there for
+# anyone who would rather commit them and have CI guard the drift.
+bfiles/

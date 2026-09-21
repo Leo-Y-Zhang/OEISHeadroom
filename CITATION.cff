@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use this software, or cite the values it establishes, please cite the archived version below."
-title: "OEISHeadroom: finding OEIS sequences with computational headroom, and extending seven of them"
+title: "OEISHeadroom: verified extensions to seven OEIS sequences"
 abstract: >-
   A filter over all 399,277 OEIS sequences for counting sequences whose published
   data stops at a value small enough that the wall was patience rather than

@@ -18,9 +18,22 @@ Two design decisions worth defending. Verification is DEFAULT-DENY: a module
 that fails to import, or whose terms() raises, or that has no snapshot, is a
 FAILURE and never a skip - an unrunnable check and a passing check must not look
 alike. And the published data is snapshotted to a file with the date it was
-fetched, so `verify` works offline and in CI, while `verify --live` re-fetches
-and reports drift. A verifier that silently needs the network is a verifier that
-silently stops running.
+fetched, so `verify` works offline and in CI. A verifier that silently needs the
+network is a verifier that silently stops running.
+
+That snapshot is now FROZEN, and the freeze is the whole argument rather than
+housekeeping. All seven extensions have since been accepted by the OEIS, so what
+oeis.org publishes today already contains this repository's own output. Re-fetch
+it into the baseline and step 2 above stops being a test: the program would be
+recomputing numbers it supplied, and agreeing with itself is worth nothing. The
+baseline stays at the pre-submission data -- 153 terms this repository had no
+hand in -- and `snapshot` refuses to overwrite it without --force.
+
+What the live data is good for is a different check, and one that could not run
+until the terms were accepted: `verify --live` confirms OEIS now publishes
+exactly the terms computed here. Disagreement there is not drift to note, it is
+a wrong value sitting in the OEIS under the author's name, or a wrong value
+here. See confirm_one for the four ways that can go.
 """
 from __future__ import annotations
 
@@ -44,6 +57,7 @@ class Result:
     n_computed: int = 0
     new_terms: list[int] = dataclasses.field(default_factory=list)
     seconds: float = 0.0
+    offset: int = 0
 
     @property
     def n_new(self) -> int:
@@ -151,7 +165,7 @@ def check_one(path: str, snapshot: dict, extend_to: int | None = None) -> Result
 
     # 3. Everything past the published data is the contribution.
     return Result(seq_id, True, "reproduces every published term",
-                  len(published), len(got), got[len(published):], elapsed)
+                  len(published), len(got), got[len(published):], elapsed, offset)
 
 
 def check_all(seq_dir: str, snapshot_path: str,
@@ -190,3 +204,139 @@ def snapshot(seq_dir: str, out_path: str) -> dict:
         json.dump(doc, fh, indent=1)
         fh.write("\n")
     return doc
+
+
+# --------------------------------------------------------------------------
+# Confirmation: does the OEIS now publish what this repository computed?
+#
+# Before the extensions were accepted this check did not exist, and `--live`
+# only asked whether the snapshot had gone stale. Acceptance inverts the
+# question. The terms are out there now, under a human author's name, and the
+# failure mode worth catching is no longer "OEIS moved" but "what got published
+# is not what was computed" -- an editor trimming a term, a b-file pasted a line
+# off, a submission built from a stale run. Nobody would notice that from the
+# inside: this repository would keep passing its own gate while the OEIS carried
+# a wrong value attributed to it.
+#
+# So the live data is compared against the frozen baseline PLUS the terms the
+# gate just recomputed, and every way that can disagree gets its own verdict
+# rather than one undifferentiated "drift":
+#
+#   CONFIRMED   OEIS carries some or all of this repository's terms, all equal.
+#   AHEAD       all of them, and more past them -- somebody extended further.
+#   PENDING     still only the baseline. Submitted-not-yet-approved looks like
+#               this, and so does never-submitted; it is not a failure.
+#   CONFIRMED / AHEAD / PENDING are the three states that are not a problem.
+#   MISMATCH    OEIS and this repository disagree on a term past the baseline.
+#   REVISED     OEIS changed a term the gate verified against. The baseline is
+#               no longer what the OEIS says, so the evidence needs re-reading
+#               by a human before anything here is a claim again.
+#   UNREACHABLE could not fetch. Default-deny: not confirmed is not confirmed.
+# --------------------------------------------------------------------------
+
+LIVE_OK = ("CONFIRMED", "AHEAD", "PENDING")
+
+# The OEIS shows the DATA field as about three lines, roughly 260 characters of
+# comma-separated terms; past that an extension has to travel as a b-file (a
+# plain "n a(n)" text file linked from the entry). This is a display limit read
+# off the rendered entries, not a validated field width, so it is used only to
+# say which extensions certainly need a b-file -- never to conclude that one
+# without a b-file would be refused. A b-file is welcome at any length.
+DATA_CAP = 260
+
+
+@dataclasses.dataclass
+class LiveResult:
+    seq_id: str
+    status: str
+    detail: str
+    n_live: int = 0
+    n_confirmed: int = 0
+
+    @property
+    def ok(self) -> bool:
+        return self.status in LIVE_OK
+
+
+def confirm_one(seq_id: str, offset: int, baseline: list[int],
+                contributed: list[int], live: list[int] | None) -> LiveResult:
+    """Classify the live OEIS data against baseline + what the gate computed."""
+    if live is None:
+        return LiveResult(seq_id, "UNREACHABLE", "could not fetch from OEIS")
+
+    n = len(baseline)
+    if live[:n] != baseline:
+        if len(live) < n:
+            return LiveResult(seq_id, "REVISED",
+                              f"OEIS now publishes {len(live)} terms, fewer than the "
+                              f"{n} in the frozen baseline", len(live))
+        bad = next(i for i, (a, b) in enumerate(zip(live[:n], baseline, strict=True))
+                   if a != b)
+        return LiveResult(seq_id, "REVISED",
+                          f"OEIS changed a({offset + bad}): baseline {baseline[bad]}, "
+                          f"now {live[bad]}", len(live))
+
+    extra = live[n:]
+    if not extra:
+        return LiveResult(seq_id, "PENDING",
+                          "OEIS publishes only the baseline terms; nothing from here "
+                          "is live yet", len(live))
+
+    for i, (theirs, ours) in enumerate(zip(extra, contributed, strict=False)):
+        if theirs != ours:
+            return LiveResult(seq_id, "MISMATCH",
+                              f"OEIS publishes a({offset + n + i}) = {theirs}, this "
+                              f"repository computes {ours}", len(live), i)
+
+    if len(extra) <= len(contributed):
+        return LiveResult(seq_id, "CONFIRMED",
+                          f"{len(extra)} of this repository's {len(contributed)} terms "
+                          f"are published, all equal", len(live), len(extra))
+    return LiveResult(seq_id, "AHEAD",
+                      f"all {len(contributed)} of this repository's terms are published "
+                      f"and equal; OEIS carries {len(extra) - len(contributed)} more "
+                      f"past them", len(live), len(contributed))
+
+
+def confirm_live(results: list[Result], snapshot: dict, fetch=None,
+                 pause: float = 0.5) -> list[LiveResult]:
+    """Run confirm_one over every sequence the offline gate passed.
+
+    A sequence that failed the gate is left out rather than reported as
+    unconfirmed: its own failure is already the answer, and re-stating it as a
+    second red line invites fixing the wrong thing.
+    """
+    fetch = fetch or fetch_published
+    out = []
+    for r in results:
+        if not r.ok:
+            continue
+        baseline = list(snapshot.get(r.seq_id, {}).get("data") or [])
+        out.append(confirm_one(r.seq_id, r.offset, baseline, list(r.new_terms),
+                               fetch(r.seq_id)))
+        if pause:
+            time.sleep(pause)                 # be a polite client
+    return out
+
+
+def data_line(terms: list[int]) -> str:
+    """The terms as the OEIS DATA field renders them."""
+    return ", ".join(str(t) for t in terms)
+
+
+def fits_in_data(terms: list[int]) -> bool:
+    return len(data_line(terms)) <= DATA_CAP
+
+
+def bfile_text(seq_id: str, offset: int, terms: list[int]) -> str:
+    """Render a b-file: one "n a(n)" line per term, LF endings, no blank last line.
+
+    The header comment is the form the OEIS itself generates. Note that this is
+    rendered from the terms the gate just recomputed, never from a stored list:
+    a b-file assembled by hand from an old run is exactly the transcription
+    error `verify --live` exists to catch, and generating it from anything but
+    the verified output would build that error in at the source.
+    """
+    last = offset + len(terms) - 1
+    head = f"# {seq_id}: Table of n, a(n) for n = {offset}..{last}.\n"
+    return head + "".join(f"{offset + i} {t}\n" for i, t in enumerate(terms))

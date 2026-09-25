@@ -43,6 +43,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import time
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -65,15 +66,27 @@ class Result:
         return len(self.new_terms)
 
 
+def _fetch_failed(url: str, why: str) -> None:
+    """Say why a fetch failed. The verdict is UNREACHABLE either way, but that
+    alone does not say whether to retry, change the client or ask the OEIS, so
+    the reason goes to stderr, which is where a CI log will show it."""
+    print(f"  fetch failed: {url}: {why}", file=sys.stderr)
+
+
 def _get(url: str, timeout: int) -> bytes | None:
     """GET a URL with curl, following redirects. None on any failure, an HTTP
     error status included."""
     try:
-        out = subprocess.run(["curl", "-s", "-f", "-L", "-A", UA, url],
+        out = subprocess.run(["curl", "-s", "-S", "-f", "-L", "-A", UA, url],
                              capture_output=True, timeout=timeout)
-    except (subprocess.SubprocessError, OSError):
+    except (subprocess.SubprocessError, OSError) as exc:
+        _fetch_failed(url, repr(exc))
         return None
-    return out.stdout if out.returncode == 0 else None
+    if out.returncode != 0:
+        _fetch_failed(url, out.stderr.decode("utf-8", "replace").strip()
+                      or f"curl exited {out.returncode}")
+        return None
+    return out.stdout
 
 
 def fetch_published(seq_id: str, timeout: int = 60) -> list[int] | None:
@@ -82,12 +95,14 @@ def fetch_published(seq_id: str, timeout: int = 60) -> list[int] | None:
     Note the explicit utf-8 decode: OEIS records carry accented author names,
     and Windows' cp1252 default raises UnicodeDecodeError on them.
     """
-    body = _get(f"https://oeis.org/search?q=id:{seq_id}&fmt=json", timeout)
+    url = f"https://oeis.org/search?q=id:{seq_id}&fmt=json"
+    body = _get(url, timeout)
     if body is None:
         return None
     try:
         doc = json.loads(body.decode("utf-8", "replace"))
     except json.JSONDecodeError:
+        _fetch_failed(url, f"the response is not JSON: {body[:80]!r}")
         return None
     # The search answers with a bare list of records, or null for no hit; the
     # older API wrapped the same list as {"results": [...]}, with null for no
@@ -95,6 +110,7 @@ def fetch_published(seq_id: str, timeout: int = 60) -> list[int] | None:
     # that will not answer must not take every other verdict down with it.
     recs = doc.get("results") if isinstance(doc, dict) else doc
     if not isinstance(recs, list) or not recs or not isinstance(recs[0], dict):
+        _fetch_failed(url, f"no record in the response: {body[:80]!r}")
         return None
     data = recs[0].get("data")
     if not isinstance(data, str):
@@ -406,14 +422,16 @@ def _one_verdict(data: LiveResult, table: LiveResult) -> LiveResult:
     """Fold the DATA-field and b-file verdicts for one entry into one.
 
     Both have to pass. A failure of either is the verdict (the more serious one
-    if both fail); otherwise the source carrying more of this repository's
-    terms speaks for the entry, which for a long extension is the b-file.
+    if both fail, with both reasons); otherwise the source carrying more of
+    this repository's terms speaks for the entry, which for a long extension is
+    the b-file.
     """
     data = dataclasses.replace(data, detail=f"DATA: {data.detail}")
     table = dataclasses.replace(table, detail=f"b-file: {table.detail}")
     bad = [x for x in (data, table) if not x.ok]
     if bad:
-        return min(bad, key=lambda x: LIVE_SEVERITY.index(x.status))
+        worst = min(bad, key=lambda x: LIVE_SEVERITY.index(x.status))
+        return dataclasses.replace(worst, detail="; ".join(x.detail for x in bad))
     return max((data, table), key=lambda x: (x.n_confirmed, x.n_live))
 
 

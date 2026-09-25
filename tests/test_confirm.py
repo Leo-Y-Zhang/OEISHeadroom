@@ -10,7 +10,9 @@ reader to ignore it.
 """
 from __future__ import annotations
 
+import contextlib
 import http.server
+import io
 import os
 import shutil
 import subprocess
@@ -219,6 +221,12 @@ class TestConfirmLive(unittest.TestCase):
         out = self.run_live(None, table(BASE + [13, 21, 35]))
         self.assertEqual(out[0].status, "MISMATCH")
 
+    def test_when_both_fail_both_reasons_are_given(self):
+        out = self.run_live(None, "<html>challenge</html>\n")
+        self.assertEqual(out[0].status, "UNREACHABLE")
+        self.assertIn("DATA: could not fetch", out[0].detail)
+        self.assertIn("b-file: could not read", out[0].detail)
+
     def test_a_sequence_that_failed_the_gate_is_not_reported_twice(self):
         calls = []
 
@@ -232,10 +240,14 @@ class TestConfirmLive(unittest.TestCase):
         self.assertEqual(calls, [])           # and it does not hit the network
 
 
-def served(body: bytes, returncode: int = 0):
-    """Stand in for curl: every fetch returns this body and exit status."""
-    done = subprocess.CompletedProcess([], returncode, stdout=body, stderr=b"")
-    return mock.patch.object(verify.subprocess, "run", return_value=done)
+@contextlib.contextmanager
+def served(body: bytes, returncode: int = 0, stderr: bytes = b"", log=None):
+    """Stand in for curl: every fetch returns this body, exit status and stderr.
+    What the fetch reports on stderr goes to `log` (a StringIO), or nowhere."""
+    done = subprocess.CompletedProcess([], returncode, stdout=body, stderr=stderr)
+    with mock.patch.object(verify.subprocess, "run", return_value=done) as run, \
+            contextlib.redirect_stderr(log if log is not None else io.StringIO()):
+        yield run
 
 
 class TestFetchPublished(unittest.TestCase):
@@ -270,6 +282,23 @@ class TestFetchPublished(unittest.TestCase):
     def test_a_failed_transfer_is_none(self):
         with served(b'[{"number": 1, "data": "1,2,3"}]', returncode=22):
             self.assertIsNone(fetch_published("A000001"))
+
+    def test_says_why_a_fetch_failed(self):
+        """UNREACHABLE alone does not say whether to retry, change the client
+        or ask the OEIS. The reason goes to stderr, and so into the CI log."""
+        log = io.StringIO()
+        with served(b"", returncode=22, log=log,
+                    stderr=b"curl: (22) The requested URL returned error: 403"):
+            fetch_published("A000001")
+        self.assertIn("id:A000001", log.getvalue())
+        self.assertIn("error: 403", log.getvalue())
+
+    def test_quotes_a_page_that_is_not_json(self):
+        log = io.StringIO()
+        with served(b"<html><title>Checking your browser</title>", log=log):
+            fetch_published("A000001")
+        self.assertIn("not JSON", log.getvalue())
+        self.assertIn("Checking your browser", log.getvalue())
 
 
 class TestFetchBfile(unittest.TestCase):
@@ -333,8 +362,11 @@ class TestGetOverHttp(unittest.TestCase):
     def test_a_redirect_is_followed(self):
         self.assertEqual(verify._get(self.base + "/moved", 10), b"1 1\n")
 
-    def test_an_error_status_is_none(self):
-        self.assertIsNone(verify._get(self.base + "/missing", 10))
+    def test_an_error_status_is_none_and_says_which(self):
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log):
+            self.assertIsNone(verify._get(self.base + "/missing", 10))
+        self.assertIn("404", log.getvalue())
 
 
 class TestBfile(unittest.TestCase):

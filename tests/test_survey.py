@@ -66,6 +66,21 @@ class TestRejects(unittest.TestCase):
         self.assertIsNone(assess("Number of monotone Boolean functions of n "
                                  "variables (graphs).", dedekind))
 
+    def test_a_large_last_term_is_rejected_even_when_growth_is_gentle(self):
+        """The Dedekind numbers above also fail on growth, so they do not show
+        that magnitude alone disqualifies. This does: doubling is ordinary,
+        and only the size of the last term is out of range."""
+        def doubling_to(last):
+            return ",".join(str(last >> k) for k in range(11, -1, -1))
+        self.assertIsNone(assess(GOOD_NAME, doubling_to(survey.MAX_LAST)))
+        self.assertIsNotNone(assess(GOOD_NAME, doubling_to(survey.MAX_LAST - 1)))
+
+    def test_a_tail_that_stalls_is_rejected(self):
+        """Growth has to be strict: a repeated value in the tail is not the
+        steady growth that makes the last term a measure of effort."""
+        stalled = GROWING.replace("3420", "1310")
+        self.assertIsNone(assess(GOOD_NAME, stalled))
+
     def test_explosive_growth_is_rejected(self):
         """Factorial growth outruns any algorithm within a few terms.
 

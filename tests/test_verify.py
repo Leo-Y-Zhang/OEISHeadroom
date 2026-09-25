@@ -52,6 +52,23 @@ class TestAccepts(unittest.TestCase):
         self.assertTrue(r.ok, r.reason)
         self.assertEqual(r.new_terms, [])
 
+    def test_with_no_target_the_gate_recomputes_exactly_the_published_range(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = check_one(write_module(d, HONEST), SNAPSHOT)
+        self.assertTrue(r.ok, r.reason)
+        self.assertEqual((r.n_computed, r.new_terms), (6, []))
+
+    def test_the_result_carries_the_module_s_offset(self):
+        """`bfile` and `verify --live` number every a(n) from it. Lose it and
+        each b-file for an offset-1 sequence is rendered a line off."""
+        with tempfile.TemporaryDirectory() as d1, tempfile.TemporaryDirectory() as d0:
+            r1 = check_one(write_module(d1, HONEST), SNAPSHOT, extend_to=8)
+            from_zero = (HONEST.replace("OFFSET = 1", "OFFSET = 0")
+                         .replace("out[:n_max]", "out[:n_max + 1]"))
+            r0 = check_one(write_module(d0, from_zero), SNAPSHOT, extend_to=7)
+        self.assertTrue(r1.ok and r0.ok, (r1.reason, r0.reason))
+        self.assertEqual((r1.offset, r0.offset), (1, 0))
+
 
 class TestRefuses(unittest.TestCase):
     def test_one_wrong_term_fails_and_names_the_index(self):
@@ -116,6 +133,16 @@ def terms(n_max):
             r = check_one(write_module(d, short), SNAPSHOT, extend_to=8)
         self.assertFalse(r.ok)
         self.assertIn("fewer than", r.reason)
+
+    def test_returning_more_terms_than_asked_for_fails(self):
+        """terms(n) is a(OFFSET)..a(n). Terms past n were not asked for, so
+        reporting them would claim an extension the gate never targeted."""
+        eager = HONEST.replace("return out[:n_max]", "return out")
+        with tempfile.TemporaryDirectory() as d:
+            r = check_one(write_module(d, eager), SNAPSHOT, extend_to=7)
+        self.assertFalse(r.ok)
+        self.assertIn("returned 8", r.reason)
+        self.assertEqual(r.new_terms, [])
 
     def test_empty_published_fails(self):
         empty = "OFFSET = 1\nPUBLISHED = []\ndef terms(n_max):\n    return []\n"

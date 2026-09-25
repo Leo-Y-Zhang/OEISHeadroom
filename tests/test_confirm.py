@@ -358,6 +358,10 @@ class TestBfile(unittest.TestCase):
     def test_a_short_one_is_not(self):
         self.assertTrue(fits_in_data([1, 2, 3]))
 
+    def test_the_cap_itself_still_fits(self):
+        self.assertTrue(fits_in_data([10 ** (verify.DATA_CAP - 1)]))
+        self.assertFalse(fits_in_data([10 ** verify.DATA_CAP]))
+
 
 if __name__ == "__main__":
     unittest.main()

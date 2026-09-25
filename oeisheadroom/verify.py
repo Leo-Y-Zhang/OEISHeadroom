@@ -64,25 +64,41 @@ class Result:
         return len(self.new_terms)
 
 
+def _get(url: str, timeout: int) -> bytes | None:
+    """GET a URL with curl. None on any failure, an HTTP error status included."""
+    try:
+        out = subprocess.run(["curl", "-s", "-f", "-A", UA, url],
+                             capture_output=True, timeout=timeout)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return out.stdout if out.returncode == 0 else None
+
+
 def fetch_published(seq_id: str, timeout: int = 60) -> list[int] | None:
     """Pull a sequence's DATA line straight from OEIS. None on any failure.
 
     Note the explicit utf-8 decode: OEIS records carry accented author names,
     and Windows' cp1252 default raises UnicodeDecodeError on them.
     """
-    url = f"https://oeis.org/search?q=id:{seq_id}&fmt=json"
-    try:
-        out = subprocess.run(["curl", "-s", "-A", UA, url],
-                             capture_output=True, timeout=timeout)
-        doc = json.loads(out.stdout.decode("utf-8", "replace"))
-    except (subprocess.SubprocessError, json.JSONDecodeError, OSError):
-        return None
-    rec = doc.get("results", [None])[0] if isinstance(doc, dict) else (
-        doc[0] if doc else None)
-    if not rec or "data" not in rec:
+    body = _get(f"https://oeis.org/search?q=id:{seq_id}&fmt=json", timeout)
+    if body is None:
         return None
     try:
-        return [int(x) for x in rec["data"].split(",") if x.strip()]
+        doc = json.loads(body.decode("utf-8", "replace"))
+    except json.JSONDecodeError:
+        return None
+    # The search answers with a bare list of records, or null for no hit; the
+    # older API wrapped the same list as {"results": [...]}, with null for no
+    # hit. Anything else is a failure to fetch, not an exception: one entry
+    # that will not answer must not take every other verdict down with it.
+    recs = doc.get("results") if isinstance(doc, dict) else doc
+    if not isinstance(recs, list) or not recs or not isinstance(recs[0], dict):
+        return None
+    data = recs[0].get("data")
+    if not isinstance(data, str):
+        return None
+    try:
+        return [int(x) for x in data.split(",") if x.strip()]
     except ValueError:
         return None
 

@@ -66,9 +66,10 @@ class Result:
 
 
 def _get(url: str, timeout: int) -> bytes | None:
-    """GET a URL with curl. None on any failure, an HTTP error status included."""
+    """GET a URL with curl, following redirects. None on any failure, an HTTP
+    error status included."""
     try:
-        out = subprocess.run(["curl", "-s", "-f", "-A", UA, url],
+        out = subprocess.run(["curl", "-s", "-f", "-L", "-A", UA, url],
                              capture_output=True, timeout=timeout)
     except (subprocess.SubprocessError, OSError):
         return None
@@ -102,6 +103,16 @@ def fetch_published(seq_id: str, timeout: int = 60) -> list[int] | None:
         return [int(x) for x in data.split(",") if x.strip()]
     except ValueError:
         return None
+
+
+def fetch_bfile(seq_id: str, timeout: int = 60) -> str | None:
+    """The b-file the OEIS serves for a sequence, as text. None on any failure.
+
+    This is where an extension too long for the DATA field is published, so it
+    is the only place the end of one can be checked.
+    """
+    body = _get(f"https://oeis.org/{seq_id}/b{seq_id[1:]}.txt", timeout)
+    return None if body is None else body.decode("utf-8-sig", "replace")
 
 
 class _FromSource(importlib.machinery.SourceFileLoader):
@@ -250,7 +261,11 @@ def snapshot(seq_dir: str, out_path: str) -> dict:
 #
 # So the live data is compared against the frozen baseline PLUS the terms the
 # gate just recomputed, and every way that can disagree gets its own verdict
-# rather than one undifferentiated "drift":
+# rather than one undifferentiated "drift". "The live data" is two things, and
+# both are read: the DATA field, and the b-file, which is where an extension
+# longer than DATA_CAP is published and which carries its own indices to get
+# wrong. A check of DATA alone would confirm the head of such an extension and
+# never see the rest.
 #
 #   CONFIRMED   OEIS carries some or all of this repository's terms, all equal.
 #   AHEAD       all of them, and more past them -- somebody extended further.
@@ -258,13 +273,18 @@ def snapshot(seq_dir: str, out_path: str) -> dict:
 #               this, and so does never-submitted; it is not a failure.
 #   CONFIRMED / AHEAD / PENDING are the three states that are not a problem.
 #   MISMATCH    OEIS and this repository disagree on a term past the baseline.
-#   REVISED     OEIS changed a term the gate verified against. The baseline is
-#               no longer what the OEIS says, so the evidence needs re-reading
-#               by a human before anything here is a claim again.
-#   UNREACHABLE could not fetch. Default-deny: not confirmed is not confirmed.
+#   REVISED     OEIS changed a term, or the offset, the gate verified against. The
+#               baseline is no longer what the OEIS says, so the evidence needs
+#               re-reading by a human before anything here is a claim again.
+#   UNREACHABLE could not fetch or read. Default-deny: not confirmed is not
+#               confirmed.
 # --------------------------------------------------------------------------
 
 LIVE_OK = ("CONFIRMED", "AHEAD", "PENDING")
+
+# When the DATA field and the b-file both fail, the verdict reported is the one
+# a human most needs to act on.
+LIVE_SEVERITY = ("MISMATCH", "REVISED", "UNREACHABLE")
 
 # The OEIS shows the DATA field as about three lines, roughly 260 characters of
 # comma-separated terms; past that an extension has to travel as a b-file (a
@@ -328,24 +348,99 @@ def confirm_one(seq_id: str, offset: int, baseline: list[int],
                       f"past them", len(live), len(contributed))
 
 
-def confirm_live(results: list[Result], snapshot: dict, fetch=None,
+def parse_bfile(text: str) -> list[tuple[int, int]]:
+    """Read a b-file into its (n, a(n)) pairs, in file order.
+
+    One "n a(n)" pair per line; blank lines and lines starting with # are
+    skipped. Any other line is a ValueError naming it, not a skipped line: a
+    reader that drops what it cannot parse reads a damaged b-file as a shorter,
+    intact one.
+    """
+    pairs = []
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        try:
+            if len(fields) != 2:
+                raise ValueError
+            pairs.append((int(fields[0]), int(fields[1])))
+        except ValueError:
+            raise ValueError(f"line {lineno} is not 'n a(n)': {line[:40]!r}") from None
+    if not pairs:
+        raise ValueError("no 'n a(n)' lines in it")
+    return pairs
+
+
+def confirm_bfile(seq_id: str, offset: int, baseline: list[int],
+                  contributed: list[int], text: str | None) -> LiveResult:
+    """confirm_one for the b-file, whose indices have to be right as well.
+
+    The DATA field is a bare list, so a term in the wrong place there is simply
+    a wrong term. A b-file states every index, and those can be wrong on their
+    own: starting from a different offset than the one every a(n) here is
+    numbered from, or skipping a line. Both are checked before the values are.
+    """
+    if text is None:
+        return LiveResult(seq_id, "UNREACHABLE", "could not fetch the b-file from OEIS")
+    try:
+        pairs = parse_bfile(text)
+    except ValueError as exc:
+        return LiveResult(seq_id, "UNREACHABLE", f"could not read the b-file: {exc}")
+    if pairs[0][0] != offset:
+        return LiveResult(seq_id, "REVISED",
+                          f"the OEIS b-file starts at a({pairs[0][0]}); the gate "
+                          f"verified from a({offset})", len(pairs))
+    for i, (n, _) in enumerate(pairs):
+        if n != offset + i:
+            # Inside the baseline this is the record the gate verified against
+            # changing under it; past it, a term here with no row there.
+            return LiveResult(seq_id, "REVISED" if i < len(baseline) else "MISMATCH",
+                              f"the OEIS b-file goes from a({offset + i - 1}) to "
+                              f"a({n})", len(pairs))
+    return confirm_one(seq_id, offset, baseline, contributed, [v for _, v in pairs])
+
+
+def _one_verdict(data: LiveResult, table: LiveResult) -> LiveResult:
+    """Fold the DATA-field and b-file verdicts for one entry into one.
+
+    Both have to pass. A failure of either is the verdict (the more serious one
+    if both fail); otherwise the source carrying more of this repository's
+    terms speaks for the entry, which for a long extension is the b-file.
+    """
+    data = dataclasses.replace(data, detail=f"DATA: {data.detail}")
+    table = dataclasses.replace(table, detail=f"b-file: {table.detail}")
+    bad = [x for x in (data, table) if not x.ok]
+    if bad:
+        return min(bad, key=lambda x: LIVE_SEVERITY.index(x.status))
+    return max((data, table), key=lambda x: (x.n_confirmed, x.n_live))
+
+
+def confirm_live(results: list[Result], snapshot: dict, fetch=None, fetch_b=None,
                  pause: float = 0.5) -> list[LiveResult]:
-    """Run confirm_one over every sequence the offline gate passed.
+    """Check every sequence the offline gate passed against the DATA field
+    (fetched by `fetch`) and the b-file (`fetch_b`) the OEIS publishes.
 
     A sequence that failed the gate is left out rather than reported as
     unconfirmed: its own failure is already the answer, and re-stating it as a
     second red line invites fixing the wrong thing.
     """
     fetch = fetch or fetch_published
+    fetch_b = fetch_b or fetch_bfile
     out = []
     for r in results:
         if not r.ok:
             continue
         baseline = list(snapshot.get(r.seq_id, {}).get("data") or [])
-        out.append(confirm_one(r.seq_id, r.offset, baseline, list(r.new_terms),
-                               fetch(r.seq_id)))
+        ours = list(r.new_terms)
+        data = confirm_one(r.seq_id, r.offset, baseline, ours, fetch(r.seq_id))
         if pause:
             time.sleep(pause)                 # be a polite client
+        table = confirm_bfile(r.seq_id, r.offset, baseline, ours, fetch_b(r.seq_id))
+        if pause:
+            time.sleep(pause)
+        out.append(_one_verdict(data, table))
     return out
 
 

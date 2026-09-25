@@ -119,15 +119,19 @@ b-file pasted a line off, a submission assembled from an older run -- each puts
 a wrong value into the OEIS under a human author's name, and leaves this
 repository passing its own gate.
 
-`oeisheadroom verify --live` fetches each entry's DATA field and its b-file and
-compares both against the frozen baseline plus the terms the gate just
-recomputed. Both, because an extension longer than the DATA field is published
-in the b-file, so a check of DATA alone would confirm the head of it and never
-see the rest; and because only the b-file states its indices, which can be
-wrong on their own. Both have to pass. Every way either can disagree gets its
-own verdict, because a check that reports "not approved yet" and "the published
-value disagrees with mine" as the same yellow warning trains its reader to
-ignore both:
+`oeisheadroom verify --live` fetches each entry's b-file and its DATA field and
+compares them against the frozen baseline plus the terms the gate just
+recomputed. The b-file, because an extension longer than the DATA field is
+published there, so a check of DATA alone would confirm the head of it and
+never see the rest; and because only the b-file states its indices, which can
+be wrong on their own. Where the OEIS synthesized the b-file from the entry, it
+*is* the DATA field with indices added and checks both; only an uploaded b-file
+needs the DATA field fetched separately, and then both have to pass. That
+matters in practice: the OEIS search endpoint answers automated clients with a
+bot challenge (HTTP 403 from GitHub's runners), while b-files are served.
+Every way this can disagree gets its own verdict, because a check that reports
+"not approved yet" and "the published value disagrees with mine" as the same
+yellow warning trains its reader to ignore both:
 
 | verdict | meaning |
 |---|---|

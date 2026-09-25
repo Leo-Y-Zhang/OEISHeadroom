@@ -10,9 +10,10 @@
       THE GATE. For each attacked sequence, check the implementation reproduces
       every term OEIS already publishes, then report what lies past them. Exits
       non-zero if any sequence fails. --live additionally fetches what the OEIS
-      publishes today, DATA field and b-file, and confirms both match the frozen
-      baseline plus the terms just computed -- a check on the published record,
-      not on this repository.
+      publishes today (the b-file, and the DATA field where the b-file was
+      uploaded rather than synthesized from it) and confirms it matches the
+      frozen baseline plus the terms just computed -- a check on the published
+      record, not on this repository.
 
   oeisheadroom bfile [--outdir DIR] [--check]
       Render an OEIS b-file ("n a(n)" per line) for every sequence that passes

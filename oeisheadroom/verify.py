@@ -277,11 +277,11 @@ def snapshot(seq_dir: str, out_path: str) -> dict:
 #
 # So the live data is compared against the frozen baseline PLUS the terms the
 # gate just recomputed, and every way that can disagree gets its own verdict
-# rather than one undifferentiated "drift". "The live data" is two things, and
-# both are read: the DATA field, and the b-file, which is where an extension
-# longer than DATA_CAP is published and which carries its own indices to get
-# wrong. A check of DATA alone would confirm the head of such an extension and
-# never see the rest.
+# rather than one undifferentiated "drift". "The live data" is the b-file,
+# which is where an extension longer than DATA_CAP is published and which
+# carries its own indices to get wrong (a check of DATA alone would confirm the
+# head of such an extension and never see the rest), and the DATA field, which
+# a b-file the OEIS synthesized from the entry already is. See confirm_live.
 #
 #   CONFIRMED   OEIS carries some or all of this repository's terms, all equal.
 #   AHEAD       all of them, and more past them -- somebody extended further.
@@ -364,6 +364,17 @@ def confirm_one(seq_id: str, offset: int, baseline: list[int],
                       f"past them", len(live), len(contributed))
 
 
+# The comment the OEIS puts at the head of a b-file it generated from the
+# entry's DATA field, because none was uploaded.
+SYNTHESIZED = "b-file synthesized from sequence entry"
+
+
+def is_synthesized(text: str) -> bool:
+    """Whether the OEIS rendered this b-file from the entry's DATA field."""
+    return any(line.startswith("#") and SYNTHESIZED in line
+               for line in text.splitlines())
+
+
 def parse_bfile(text: str) -> list[tuple[int, int]]:
     """Read a b-file into its (n, a(n)) pairs, in file order.
 
@@ -437,8 +448,16 @@ def _one_verdict(data: LiveResult, table: LiveResult) -> LiveResult:
 
 def confirm_live(results: list[Result], snapshot: dict, fetch=None, fetch_b=None,
                  pause: float = 0.5) -> list[LiveResult]:
-    """Check every sequence the offline gate passed against the DATA field
-    (fetched by `fetch`) and the b-file (`fetch_b`) the OEIS publishes.
+    """Check every sequence the offline gate passed against what the OEIS
+    publishes: its b-file (fetched by `fetch_b`) and its DATA field (`fetch`).
+
+    The b-file comes first. Where the OEIS synthesized it from the entry, it is
+    the DATA field with indices added, so checking it checks both and the DATA
+    field is not fetched again. That matters: the search endpoint the DATA
+    field comes from answers automated clients with a bot challenge (HTTP 403
+    from GitHub's runners), while b-files are served. Where the b-file was
+    uploaded, the DATA field is a separate record, and it is fetched and
+    checked as well.
 
     A sequence that failed the gate is left out rather than reported as
     unconfirmed: its own failure is already the answer, and re-stating it as a
@@ -452,10 +471,15 @@ def confirm_live(results: list[Result], snapshot: dict, fetch=None, fetch_b=None
             continue
         baseline = list(snapshot.get(r.seq_id, {}).get("data") or [])
         ours = list(r.new_terms)
-        data = confirm_one(r.seq_id, r.offset, baseline, ours, fetch(r.seq_id))
+        text = fetch_b(r.seq_id)
         if pause:
             time.sleep(pause)                 # be a polite client
-        table = confirm_bfile(r.seq_id, r.offset, baseline, ours, fetch_b(r.seq_id))
+        table = confirm_bfile(r.seq_id, r.offset, baseline, ours, text)
+        if text is not None and is_synthesized(text):
+            out.append(dataclasses.replace(
+                table, detail=f"b-file, synthesized from DATA: {table.detail}"))
+            continue
+        data = confirm_one(r.seq_id, r.offset, baseline, ours, fetch(r.seq_id))
         if pause:
             time.sleep(pause)
         out.append(_one_verdict(data, table))

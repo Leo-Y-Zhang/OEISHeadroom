@@ -34,6 +34,7 @@ from oeisheadroom.verify import (  # noqa: E402
     fetch_bfile,
     fetch_published,
     fits_in_data,
+    is_synthesized,
     parse_bfile,
 )
 
@@ -105,11 +106,13 @@ class TestRefuses(unittest.TestCase):
         self.assertFalse(r.ok)
 
 
-def table(terms, offset=1, first_index=None):
-    """A b-file as the OEIS serves it, header comment included."""
+def table(terms, offset=1, first_index=None, synthesized=False):
+    """A b-file as the OEIS serves it: an uploaded one by default, or with the
+    header the OEIS writes on one it synthesized from the DATA field."""
     start = offset if first_index is None else first_index
-    return ("# A000001 (b-file synthesized from sequence entry)\n"
-            + "".join(f"{start + i} {t}\n" for i, t in enumerate(terms)))
+    head = ("# A000001 (b-file synthesized from sequence entry)\n" if synthesized
+            else "# A000001: Table of n, a(n) for n = 1..8.\n")
+    return head + "".join(f"{start + i} {t}\n" for i, t in enumerate(terms))
 
 
 class TestParseBfile(unittest.TestCase):
@@ -127,6 +130,10 @@ class TestParseBfile(unittest.TestCase):
     def test_a_b_file_with_no_terms_is_an_error(self):
         with self.assertRaises(ValueError):
             parse_bfile("# nothing here\n")
+
+    def test_a_synthesized_b_file_is_recognised_by_its_header(self):
+        self.assertTrue(is_synthesized(table(BASE, synthesized=True)))
+        self.assertFalse(is_synthesized(table(BASE)))
 
 
 class TestConfirmBfile(unittest.TestCase):
@@ -226,6 +233,36 @@ class TestConfirmLive(unittest.TestCase):
         self.assertEqual(out[0].status, "UNREACHABLE")
         self.assertIn("DATA: could not fetch", out[0].detail)
         self.assertIn("b-file: could not read", out[0].detail)
+
+    def test_a_synthesized_b_file_checks_the_data_field_without_fetching_it(self):
+        """The OEIS rendered it from DATA, so it is DATA with indices. And the
+        endpoint DATA comes from answers automated clients with a challenge."""
+        calls = []
+
+        def fetch(sid):
+            calls.append(sid)
+            return None
+
+        out = confirm_live([self.result()], self.snapshot(), fetch=fetch,
+                           fetch_b=lambda sid: table(BASE + OURS, synthesized=True),
+                           pause=0)
+        self.assertEqual(out[0].status, "CONFIRMED")
+        self.assertEqual(out[0].n_confirmed, 3)
+        self.assertIn("synthesized", out[0].detail)
+        self.assertEqual(calls, [])
+
+    def test_a_wrong_term_in_a_synthesized_b_file_is_a_mismatch(self):
+        out = self.run_live(None, table(BASE + [13, 21, 35], synthesized=True))
+        self.assertEqual(out[0].status, "MISMATCH")
+        self.assertIn("a(8)", out[0].detail)
+
+    def test_an_uploaded_b_file_does_not_stand_in_for_the_data_field(self):
+        """An uploaded b-file is a separate record from DATA; if DATA cannot
+        be fetched, half the published record is unchecked, which is not a
+        pass."""
+        out = self.run_live(None, table(BASE + OURS))
+        self.assertEqual(out[0].status, "UNREACHABLE")
+        self.assertIn("DATA", out[0].detail)
 
     def test_a_sequence_that_failed_the_gate_is_not_reported_twice(self):
         calls = []

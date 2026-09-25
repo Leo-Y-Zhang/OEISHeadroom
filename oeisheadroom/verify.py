@@ -38,6 +38,7 @@ here. See confirm_one for the four ways that can go.
 from __future__ import annotations
 
 import dataclasses
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -103,9 +104,22 @@ def fetch_published(seq_id: str, timeout: int = 60) -> list[int] | None:
         return None
 
 
+class _FromSource(importlib.machinery.SourceFileLoader):
+    """Compile a module from its file as it is now, never from __pycache__.
+
+    A cached .pyc is reused whenever the source's size and whole-second mtime
+    match the ones it recorded, so an edit of the same length made within the
+    same second would have the gate grade the previous version of the code.
+    """
+
+    def get_code(self, fullname):
+        return self.source_to_code(self.get_data(self.path), self.path)
+
+
 def load_module(path: str):
+    name = os.path.splitext(os.path.basename(path))[0]
     spec = importlib.util.spec_from_file_location(
-        os.path.splitext(os.path.basename(path))[0], path)
+        name, path, loader=_FromSource(name, path))
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load {path}")
     mod = importlib.util.module_from_spec(spec)

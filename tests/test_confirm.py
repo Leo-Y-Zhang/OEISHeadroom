@@ -10,9 +10,12 @@ reader to ignore it.
 """
 from __future__ import annotations
 
+import http.server
 import os
+import shutil
 import subprocess
 import sys
+import threading
 import unittest
 from unittest import mock
 
@@ -22,11 +25,14 @@ from oeisheadroom import verify  # noqa: E402
 from oeisheadroom.verify import (  # noqa: E402
     Result,
     bfile_text,
+    confirm_bfile,
     confirm_live,
     confirm_one,
     data_line,
+    fetch_bfile,
     fetch_published,
     fits_in_data,
+    parse_bfile,
 )
 
 BASE = [1, 2, 3, 5, 8]
@@ -97,6 +103,78 @@ class TestRefuses(unittest.TestCase):
         self.assertFalse(r.ok)
 
 
+def table(terms, offset=1, first_index=None):
+    """A b-file as the OEIS serves it, header comment included."""
+    start = offset if first_index is None else first_index
+    return ("# A000001 (b-file synthesized from sequence entry)\n"
+            + "".join(f"{start + i} {t}\n" for i, t in enumerate(terms)))
+
+
+class TestParseBfile(unittest.TestCase):
+    def test_reads_index_value_pairs_and_skips_comments_and_blanks(self):
+        text = "# header\n\n1 1\n2 -3\r\n  3   123456789012345678901234567890  \n"
+        self.assertEqual(parse_bfile(text),
+                         [(1, 1), (2, -3), (3, 123456789012345678901234567890)])
+
+    def test_a_line_that_is_not_n_and_a_n_is_an_error_not_a_skip(self):
+        """Skipping it would read a damaged b-file as a shorter, intact one."""
+        for bad in ("1 1\n2 2 2\n", "1 1\n2 x\n", "<!DOCTYPE html>\n", "1 1\n2\n"):
+            with self.subTest(text=bad), self.assertRaises(ValueError):
+                parse_bfile(bad)
+
+    def test_a_b_file_with_no_terms_is_an_error(self):
+        with self.assertRaises(ValueError):
+            parse_bfile("# nothing here\n")
+
+
+class TestConfirmBfile(unittest.TestCase):
+    def check(self, text, offset=1):
+        return confirm_bfile("A000001", offset, BASE, OURS, text)
+
+    def test_a_b_file_carrying_all_our_terms_is_confirmed(self):
+        r = self.check(table(BASE + OURS))
+        self.assertEqual(r.status, "CONFIRMED")
+        self.assertEqual(r.n_confirmed, 3)
+
+    def test_a_b_file_pasted_a_line_off_is_a_mismatch(self):
+        """The case the README names: every value one row early."""
+        r = self.check(table(BASE + OURS[1:] + [55]))
+        self.assertEqual(r.status, "MISMATCH")
+        self.assertIn("a(6)", r.detail)
+
+    def test_a_skipped_index_past_the_baseline_is_a_mismatch(self):
+        text = table(BASE + OURS).replace("7 21\n", "")
+        r = self.check(text)
+        self.assertEqual(r.status, "MISMATCH")
+        self.assertIn("a(8)", r.detail)
+
+    def test_a_skipped_index_inside_the_baseline_is_revised(self):
+        r = self.check(table(BASE + OURS).replace("3 3\n", ""))
+        self.assertEqual(r.status, "REVISED")
+
+    def test_a_changed_baseline_value_is_revised(self):
+        r = self.check(table([1, 2, 4, 5, 8] + OURS))
+        self.assertEqual(r.status, "REVISED")
+        self.assertIn("a(3)", r.detail)
+
+    def test_a_b_file_starting_at_another_offset_is_revised(self):
+        """The DATA field carries no indices, so only the b-file can show that
+        the OEIS moved the offset every a(n) here is numbered from."""
+        r = self.check(table(BASE + OURS, first_index=0))
+        self.assertEqual(r.status, "REVISED")
+        self.assertIn("starts at a(0)", r.detail)
+
+    def test_an_unreadable_b_file_is_not_confirmed(self):
+        r = self.check("<html><body>Please try again later</body></html>\n")
+        self.assertEqual(r.status, "UNREACHABLE")
+        self.assertFalse(r.ok)
+
+    def test_an_unfetchable_b_file_is_not_confirmed(self):
+        r = self.check(None)
+        self.assertEqual(r.status, "UNREACHABLE")
+        self.assertFalse(r.ok)
+
+
 class TestConfirmLive(unittest.TestCase):
     def snapshot(self):
         return {"A000001": {"data": BASE, "n_terms": len(BASE)}}
@@ -105,10 +183,41 @@ class TestConfirmLive(unittest.TestCase):
         return Result("A000001", ok, "reproduces every published term",
                       len(BASE), len(BASE) + len(OURS), list(OURS), 0.0, 1)
 
+    def run_live(self, data, bfile):
+        return confirm_live([self.result()], self.snapshot(),
+                            fetch=lambda sid: data, fetch_b=lambda sid: bfile,
+                            pause=0)
+
     def test_fetches_and_classifies_each_passing_sequence(self):
-        out = confirm_live([self.result()], self.snapshot(),
-                           fetch=lambda sid: BASE + OURS, pause=0)
+        out = self.run_live(BASE + OURS, table(BASE + OURS))
         self.assertEqual([r.status for r in out], ["CONFIRMED"])
+
+    def test_a_wrong_term_past_the_data_field_is_caught_in_the_b_file(self):
+        """An extension too long for DATA is published in its b-file, so a
+        check reading DATA alone confirms the head and never sees the rest."""
+        out = self.run_live(BASE + OURS[:1], table(BASE + [13, 21, 35]))
+        self.assertEqual(out[0].status, "MISMATCH")
+        self.assertIn("b-file", out[0].detail)
+        self.assertIn("a(8)", out[0].detail)
+
+    def test_the_b_file_speaks_for_terms_the_data_field_was_trimmed_of(self):
+        out = self.run_live(BASE + OURS[:1], table(BASE + OURS))
+        self.assertEqual(out[0].status, "CONFIRMED")
+        self.assertEqual(out[0].n_confirmed, 3)
+
+    def test_a_wrong_data_field_is_not_rescued_by_a_right_b_file(self):
+        out = self.run_live(BASE + [13, 22], table(BASE + OURS))
+        self.assertEqual(out[0].status, "MISMATCH")
+        self.assertIn("DATA", out[0].detail)
+
+    def test_an_unfetchable_b_file_is_not_confirmed_by_the_data_field(self):
+        """Default-deny: half the published record checked is not a pass."""
+        out = self.run_live(BASE + OURS, None)
+        self.assertEqual(out[0].status, "UNREACHABLE")
+
+    def test_a_mismatch_outranks_an_unreachable_source(self):
+        out = self.run_live(None, table(BASE + [13, 21, 35]))
+        self.assertEqual(out[0].status, "MISMATCH")
 
     def test_a_sequence_that_failed_the_gate_is_not_reported_twice(self):
         calls = []
@@ -118,7 +227,7 @@ class TestConfirmLive(unittest.TestCase):
             return BASE
 
         out = confirm_live([self.result(ok=False)], self.snapshot(),
-                           fetch=fetch, pause=0)
+                           fetch=fetch, fetch_b=fetch, pause=0)
         self.assertEqual(out, [])
         self.assertEqual(calls, [])           # and it does not hit the network
 
@@ -161,6 +270,71 @@ class TestFetchPublished(unittest.TestCase):
     def test_a_failed_transfer_is_none(self):
         with served(b'[{"number": 1, "data": "1,2,3"}]', returncode=22):
             self.assertIsNone(fetch_published("A000001"))
+
+
+class TestFetchBfile(unittest.TestCase):
+    def test_asks_for_the_entry_s_own_b_file(self):
+        with served(b"1 1\n") as run:
+            self.assertEqual(fetch_bfile("A319381"), "1 1\n")
+        self.assertIn("https://oeis.org/A319381/b319381.txt", run.call_args.args[0])
+
+    def test_an_http_error_is_none_rather_than_the_error_page(self):
+        with served(b"<html>404</html>", returncode=22):
+            self.assertIsNone(fetch_bfile("A000001"))
+
+    def test_a_byte_order_mark_is_not_part_of_the_first_line(self):
+        with served(b"\xef\xbb\xbf1 1\n"):
+            self.assertEqual(fetch_bfile("A000001"), "1 1\n")
+
+
+class _Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/moved":
+            self.send_response(302)
+            self.send_header("Location", "/b000001.txt")
+            self.end_headers()
+        elif self.path == "/b000001.txt":
+            body = b"1 1\n"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_error(404)
+
+    def log_message(self, *args):
+        pass
+
+
+class TestGetOverHttp(unittest.TestCase):
+    """The fetch through a real curl and a local server, since the flags are
+    the behaviour: an error status must be a failed fetch, not an error page
+    handed on as content, and a redirect must be followed."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not shutil.which("curl"):
+            raise unittest.SkipTest("curl is not installed")
+        cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
+        cls.no_proxy = mock.patch.dict(os.environ, {"NO_PROXY": "*", "no_proxy": "*"})
+        cls.no_proxy.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.no_proxy.stop()
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def test_the_body_is_returned(self):
+        self.assertEqual(verify._get(self.base + "/b000001.txt", 10), b"1 1\n")
+
+    def test_a_redirect_is_followed(self):
+        self.assertEqual(verify._get(self.base + "/moved", 10), b"1 1\n")
+
+    def test_an_error_status_is_none(self):
+        self.assertIsNone(verify._get(self.base + "/missing", 10))
 
 
 class TestBfile(unittest.TestCase):

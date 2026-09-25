@@ -70,11 +70,15 @@ b-file pasted a line off, a submission assembled from an older run -- each puts
 a wrong value into the OEIS under a human author's name, and leaves this
 repository passing its own gate.
 
-`oeisheadroom verify --live` fetches each entry and compares it against the
-frozen baseline plus the terms the gate just recomputed. Every way that can
-disagree gets its own verdict, because a check that reports "not approved yet"
-and "the published value disagrees with mine" as the same yellow warning trains
-its reader to ignore both:
+`oeisheadroom verify --live` fetches each entry's DATA field and its b-file and
+compares both against the frozen baseline plus the terms the gate just
+recomputed. Both, because an extension longer than the DATA field is published
+in the b-file, so a check of DATA alone would confirm the head of it and never
+see the rest; and because only the b-file states its indices, which can be
+wrong on their own. Both have to pass. Every way either can disagree gets its
+own verdict, because a check that reports "not approved yet" and "the published
+value disagrees with mine" as the same yellow warning trains its reader to
+ignore both:
 
 | verdict | meaning |
 |---|---|
@@ -82,8 +86,8 @@ its reader to ignore both:
 | `AHEAD` | all of them, and more past them: somebody extended further |
 | `PENDING` | still only the baseline, nothing from here is live yet |
 | `MISMATCH` | OEIS and this repository disagree on a term past the baseline |
-| `REVISED` | OEIS changed a term the gate verified against |
-| `UNREACHABLE` | could not fetch -- not confirmed, which is not a pass |
+| `REVISED` | OEIS changed a term, or the offset, the gate verified against |
+| `UNREACHABLE` | could not fetch or read -- not confirmed, which is not a pass |
 
 The first three are fine; the last three exit non-zero. CI runs this weekly
 rather than on every push: wiring a network check into the gate is how a gate

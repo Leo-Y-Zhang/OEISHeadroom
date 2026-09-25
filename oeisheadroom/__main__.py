@@ -10,8 +10,9 @@
       THE GATE. For each attacked sequence, check the implementation reproduces
       every term OEIS already publishes, then report what lies past them. Exits
       non-zero if any sequence fails. --live additionally fetches what the OEIS
-      publishes today and confirms it matches the frozen baseline plus the terms
-      just computed -- a check on the published record, not on this repository.
+      publishes today, DATA field and b-file, and confirms both match the frozen
+      baseline plus the terms just computed -- a check on the published record,
+      not on this repository.
 
   oeisheadroom bfile [--outdir DIR] [--check]
       Render an OEIS b-file ("n a(n)" per line) for every sequence that passes
@@ -260,7 +261,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     v = sub.add_parser("verify", help="the gate: reproduce every published term")
     v.add_argument("--live", action="store_true",
-                   help="re-fetch from OEIS instead of trusting the snapshot")
+                   help="also confirm the OEIS publishes the verified terms "
+                        "(DATA field and b-file); the gate itself still runs "
+                        "against the frozen snapshot")
     v.set_defaults(func=cmd_verify)
 
     b = sub.add_parser("bfile", help="render OEIS b-files from verified terms")

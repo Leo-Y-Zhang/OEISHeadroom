@@ -124,6 +124,23 @@ def terms(n_max):
         self.assertFalse(r.ok)
         self.assertIn("no published terms", r.reason)
 
+    def test_an_edit_is_graded_even_when_size_and_mtime_are_unchanged(self):
+        """The gate grades the file on disk, not a cached compilation of an
+        earlier version of it. Python's bytecode cache accepts a .pyc whose
+        recorded source size and whole-second mtime match, so a same-length
+        edit inside the same second -- one digit swapped by a mutation tool,
+        say -- would otherwise run the old code and pass."""
+        stamp = (1_000_000_000, 1_000_000_000)
+        with tempfile.TemporaryDirectory() as d:
+            path = write_module(d, HONEST)
+            os.utime(path, stamp)
+            self.assertTrue(check_one(path, SNAPSHOT, extend_to=8).ok)
+            write_module(d, HONEST.replace("8, 13, 21", "9, 13, 21"))
+            os.utime(path, stamp)
+            r = check_one(path, SNAPSHOT, extend_to=8)
+        self.assertFalse(r.ok)
+        self.assertIn("a(5)", r.reason)
+
 
 
 class TestDeclaredExtension(unittest.TestCase):

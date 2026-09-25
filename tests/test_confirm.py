@@ -11,17 +11,21 @@ reader to ignore it.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from oeisheadroom import verify  # noqa: E402
 from oeisheadroom.verify import (  # noqa: E402
     Result,
     bfile_text,
     confirm_live,
     confirm_one,
     data_line,
+    fetch_published,
     fits_in_data,
 )
 
@@ -117,6 +121,46 @@ class TestConfirmLive(unittest.TestCase):
                            fetch=fetch, pause=0)
         self.assertEqual(out, [])
         self.assertEqual(calls, [])           # and it does not hit the network
+
+
+def served(body: bytes, returncode: int = 0):
+    """Stand in for curl: every fetch returns this body and exit status."""
+    done = subprocess.CompletedProcess([], returncode, stdout=body, stderr=b"")
+    return mock.patch.object(verify.subprocess, "run", return_value=done)
+
+
+class TestFetchPublished(unittest.TestCase):
+    """fetch_published promises a list of terms or None, never an exception:
+    one sequence OEIS will not answer for must come back UNREACHABLE, not take
+    the whole confirmation run down with a traceback."""
+
+    def test_reads_the_data_field_of_the_current_list_format(self):
+        with served(b'[{"number": 1, "data": "1,2,3,5,8"}]'):
+            self.assertEqual(fetch_published("A000001"), [1, 2, 3, 5, 8])
+
+    def test_reads_the_older_results_wrapper(self):
+        with served(b'{"count": 1, "results": [{"number": 1, "data": "1,2,3"}]}'):
+            self.assertEqual(fetch_published("A000001"), [1, 2, 3])
+
+    def test_no_hit_in_either_format_is_none(self):
+        for body in (b"null", b"[]", b'{"count": 0, "results": null}',
+                     b'{"count": 0, "results": []}'):
+            with self.subTest(body=body), served(body):
+                self.assertIsNone(fetch_published("A000001"))
+
+    def test_a_record_without_a_usable_data_field_is_none(self):
+        for body in (b'[{"number": 1}]', b'[{"number": 1, "data": 5}]',
+                     b'["A000001"]', b'[{"number": 1, "data": "1,x,3"}]'):
+            with self.subTest(body=body), served(body):
+                self.assertIsNone(fetch_published("A000001"))
+
+    def test_an_error_page_is_none(self):
+        with served(b"<html>Too Many Requests</html>"):
+            self.assertIsNone(fetch_published("A000001"))
+
+    def test_a_failed_transfer_is_none(self):
+        with served(b'[{"number": 1, "data": "1,2,3"}]', returncode=22):
+            self.assertIsNone(fetch_published("A000001"))
 
 
 class TestBfile(unittest.TestCase):

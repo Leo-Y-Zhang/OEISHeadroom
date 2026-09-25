@@ -7,11 +7,15 @@ candidate list before they were caught.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from oeisheadroom import survey  # noqa: E402
 from oeisheadroom.survey import assess  # noqa: E402
 
 GOOD_NAME = "Number of plane partitions of n with no repeated rows."
@@ -102,6 +106,49 @@ class TestRejects(unittest.TestCase):
 
     def test_unparseable_data_is_rejected_rather_than_crashing(self):
         self.assertIsNone(assess(GOOD_NAME, "1,2,x,12,30,76,195,504,1310"))
+
+
+def fake_curl(fail_on=None):
+    """Stand in for curl: write 2 MB to the -o target, then, for the dump named
+    by fail_on, fail part way through as a timeout or a dropped connection would.
+    """
+    calls = []
+
+    def run(cmd, **kwargs):
+        url = next(a for a in cmd if a.startswith("https://"))
+        calls.append(url)
+        with open(cmd[cmd.index("-o") + 1], "wb") as fh:
+            fh.write(b"\x1f\x8b" + b"\0" * 2_000_000)
+        if fail_on and fail_on in url:
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 0))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    return run, calls
+
+
+class TestDownload(unittest.TestCase):
+    """A cached dump over the size floor is trusted on sight, so nothing but a
+    finished download may ever be found at a cache path."""
+
+    def test_an_interrupted_download_is_not_left_in_the_cache(self):
+        run, _ = fake_curl(fail_on="stripped")
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(survey.subprocess, "run", run), \
+                    self.assertRaises(subprocess.TimeoutExpired):
+                survey.download(d)
+            self.assertEqual(sorted(os.listdir(d)), ["names.gz"])
+
+    def test_the_next_run_fetches_what_the_interrupted_one_did_not(self):
+        with tempfile.TemporaryDirectory() as d:
+            run, _ = fake_curl(fail_on="stripped")
+            with mock.patch.object(survey.subprocess, "run", run), \
+                    self.assertRaises(subprocess.TimeoutExpired):
+                survey.download(d)
+            run, calls = fake_curl()
+            with mock.patch.object(survey.subprocess, "run", run):
+                paths = survey.download(d)
+        self.assertEqual(calls, [survey.BULK["stripped"]])
+        self.assertEqual(sorted(paths), ["names", "stripped"])
 
 
 if __name__ == "__main__":

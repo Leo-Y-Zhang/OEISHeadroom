@@ -118,8 +118,9 @@ def load(cache_dir: str) -> dict[str, dict]:
 def assess(name: str, data: str) -> dict | None:
     """Return a candidate record, or None with no explanation.
 
-    Silent rejection is fine here because `survey` reports the funnel counts;
-    the caller can always see how many fell out at each stage.
+    `survey` reports only the sequences that pass, not how many fell out at
+    each stage. To see why a particular sequence was dropped, call this on its
+    name and data directly.
     """
     if not data or EXCLUDE.search(name):
         return None

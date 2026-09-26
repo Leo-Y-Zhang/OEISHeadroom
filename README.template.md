@@ -70,11 +70,19 @@ b-file pasted a line off, a submission assembled from an older run -- each puts
 a wrong value into the OEIS under a human author's name, and leaves this
 repository passing its own gate.
 
-`oeisheadroom verify --live` fetches each entry and compares it against the
-frozen baseline plus the terms the gate just recomputed. Every way that can
-disagree gets its own verdict, because a check that reports "not approved yet"
-and "the published value disagrees with mine" as the same yellow warning trains
-its reader to ignore both:
+`oeisheadroom verify --live` fetches each entry's b-file and its DATA field and
+compares them against the frozen baseline plus the terms the gate just
+recomputed. The b-file, because an extension longer than the DATA field is
+published there, so a check of DATA alone would confirm the head of it and
+never see the rest; and because only the b-file states its indices, which can
+be wrong on their own. Where the OEIS synthesized the b-file from the entry, it
+*is* the DATA field with indices added and checks both; only an uploaded b-file
+needs the DATA field fetched separately, and then both have to pass. That
+matters in practice: the OEIS search endpoint answers automated clients with a
+bot challenge (HTTP 403 from GitHub's runners), while b-files are served.
+Every way this can disagree gets its own verdict, because a check that reports
+"not approved yet" and "the published value disagrees with mine" as the same
+yellow warning trains its reader to ignore both:
 
 | verdict | meaning |
 |---|---|
@@ -82,8 +90,8 @@ its reader to ignore both:
 | `AHEAD` | all of them, and more past them: somebody extended further |
 | `PENDING` | still only the baseline, nothing from here is live yet |
 | `MISMATCH` | OEIS and this repository disagree on a term past the baseline |
-| `REVISED` | OEIS changed a term the gate verified against |
-| `UNREACHABLE` | could not fetch -- not confirmed, which is not a pass |
+| `REVISED` | OEIS changed a term, or the offset, the gate verified against |
+| `UNREACHABLE` | could not fetch or read -- not confirmed, which is not a pass |
 
 The first three are fine; the last three exit non-zero. CI runs this weekly
 rather than on every push: wiring a network check into the gate is how a gate

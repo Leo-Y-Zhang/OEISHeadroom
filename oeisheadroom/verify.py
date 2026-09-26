@@ -38,10 +38,12 @@ here. See confirm_one for the four ways that can go.
 from __future__ import annotations
 
 import dataclasses
+import importlib.machinery
 import importlib.util
 import json
 import os
 import subprocess
+import sys
 import time
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -64,6 +66,29 @@ class Result:
         return len(self.new_terms)
 
 
+def _fetch_failed(url: str, why: str) -> None:
+    """Say why a fetch failed. The verdict is UNREACHABLE either way, but that
+    alone does not say whether to retry, change the client or ask the OEIS, so
+    the reason goes to stderr, which is where a CI log will show it."""
+    print(f"  fetch failed: {url}: {why}", file=sys.stderr)
+
+
+def _get(url: str, timeout: int) -> bytes | None:
+    """GET a URL with curl, following redirects. None on any failure, an HTTP
+    error status included."""
+    try:
+        out = subprocess.run(["curl", "-s", "-S", "-f", "-L", "-A", UA, url],
+                             capture_output=True, timeout=timeout)
+    except (subprocess.SubprocessError, OSError) as exc:
+        _fetch_failed(url, repr(exc))
+        return None
+    if out.returncode != 0:
+        _fetch_failed(url, out.stderr.decode("utf-8", "replace").strip()
+                      or f"curl exited {out.returncode}")
+        return None
+    return out.stdout
+
+
 def fetch_published(seq_id: str, timeout: int = 60) -> list[int] | None:
     """Pull a sequence's DATA line straight from OEIS. None on any failure.
 
@@ -71,25 +96,57 @@ def fetch_published(seq_id: str, timeout: int = 60) -> list[int] | None:
     and Windows' cp1252 default raises UnicodeDecodeError on them.
     """
     url = f"https://oeis.org/search?q=id:{seq_id}&fmt=json"
-    try:
-        out = subprocess.run(["curl", "-s", "-A", UA, url],
-                             capture_output=True, timeout=timeout)
-        doc = json.loads(out.stdout.decode("utf-8", "replace"))
-    except (subprocess.SubprocessError, json.JSONDecodeError, OSError):
-        return None
-    rec = doc.get("results", [None])[0] if isinstance(doc, dict) else (
-        doc[0] if doc else None)
-    if not rec or "data" not in rec:
+    body = _get(url, timeout)
+    if body is None:
         return None
     try:
-        return [int(x) for x in rec["data"].split(",") if x.strip()]
+        doc = json.loads(body.decode("utf-8", "replace"))
+    except json.JSONDecodeError:
+        _fetch_failed(url, f"the response is not JSON: {body[:80]!r}")
+        return None
+    # The search answers with a bare list of records, or null for no hit; the
+    # older API wrapped the same list as {"results": [...]}, with null for no
+    # hit. Anything else is a failure to fetch, not an exception: one entry
+    # that will not answer must not take every other verdict down with it.
+    recs = doc.get("results") if isinstance(doc, dict) else doc
+    if not isinstance(recs, list) or not recs or not isinstance(recs[0], dict):
+        _fetch_failed(url, f"no record in the response: {body[:80]!r}")
+        return None
+    data = recs[0].get("data")
+    if not isinstance(data, str):
+        return None
+    try:
+        return [int(x) for x in data.split(",") if x.strip()]
     except ValueError:
         return None
 
 
+def fetch_bfile(seq_id: str, timeout: int = 60) -> str | None:
+    """The b-file the OEIS serves for a sequence, as text. None on any failure.
+
+    This is where an extension too long for the DATA field is published, so it
+    is the only place the end of one can be checked.
+    """
+    body = _get(f"https://oeis.org/{seq_id}/b{seq_id[1:]}.txt", timeout)
+    return None if body is None else body.decode("utf-8-sig", "replace")
+
+
+class _FromSource(importlib.machinery.SourceFileLoader):
+    """Compile a module from its file as it is now, never from __pycache__.
+
+    A cached .pyc is reused whenever the source's size and whole-second mtime
+    match the ones it recorded, so an edit of the same length made within the
+    same second would have the gate grade the previous version of the code.
+    """
+
+    def get_code(self, fullname):
+        return self.source_to_code(self.get_data(self.path), self.path)
+
+
 def load_module(path: str):
+    name = os.path.splitext(os.path.basename(path))[0]
     spec = importlib.util.spec_from_file_location(
-        os.path.splitext(os.path.basename(path))[0], path)
+        name, path, loader=_FromSource(name, path))
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load {path}")
     mod = importlib.util.module_from_spec(spec)
@@ -220,7 +277,11 @@ def snapshot(seq_dir: str, out_path: str) -> dict:
 #
 # So the live data is compared against the frozen baseline PLUS the terms the
 # gate just recomputed, and every way that can disagree gets its own verdict
-# rather than one undifferentiated "drift":
+# rather than one undifferentiated "drift". "The live data" is the b-file,
+# which is where an extension longer than DATA_CAP is published and which
+# carries its own indices to get wrong (a check of DATA alone would confirm the
+# head of such an extension and never see the rest), and the DATA field, which
+# a b-file the OEIS synthesized from the entry already is. See confirm_live.
 #
 #   CONFIRMED   OEIS carries some or all of this repository's terms, all equal.
 #   AHEAD       all of them, and more past them -- somebody extended further.
@@ -228,13 +289,18 @@ def snapshot(seq_dir: str, out_path: str) -> dict:
 #               this, and so does never-submitted; it is not a failure.
 #   CONFIRMED / AHEAD / PENDING are the three states that are not a problem.
 #   MISMATCH    OEIS and this repository disagree on a term past the baseline.
-#   REVISED     OEIS changed a term the gate verified against. The baseline is
-#               no longer what the OEIS says, so the evidence needs re-reading
-#               by a human before anything here is a claim again.
-#   UNREACHABLE could not fetch. Default-deny: not confirmed is not confirmed.
+#   REVISED     OEIS changed a term, or the offset, the gate verified against. The
+#               baseline is no longer what the OEIS says, so the evidence needs
+#               re-reading by a human before anything here is a claim again.
+#   UNREACHABLE could not fetch or read. Default-deny: not confirmed is not
+#               confirmed.
 # --------------------------------------------------------------------------
 
 LIVE_OK = ("CONFIRMED", "AHEAD", "PENDING")
+
+# When the DATA field and the b-file both fail, the verdict reported is the one
+# a human most needs to act on.
+LIVE_SEVERITY = ("MISMATCH", "REVISED", "UNREACHABLE")
 
 # The OEIS shows the DATA field as about three lines, roughly 260 characters of
 # comma-separated terms; past that an extension has to travel as a b-file (a
@@ -298,24 +364,125 @@ def confirm_one(seq_id: str, offset: int, baseline: list[int],
                       f"past them", len(live), len(contributed))
 
 
-def confirm_live(results: list[Result], snapshot: dict, fetch=None,
+# The comment the OEIS puts at the head of a b-file it generated from the
+# entry's DATA field, because none was uploaded.
+SYNTHESIZED = "b-file synthesized from sequence entry"
+
+
+def is_synthesized(text: str) -> bool:
+    """Whether the OEIS rendered this b-file from the entry's DATA field."""
+    return any(line.startswith("#") and SYNTHESIZED in line
+               for line in text.splitlines())
+
+
+def parse_bfile(text: str) -> list[tuple[int, int]]:
+    """Read a b-file into its (n, a(n)) pairs, in file order.
+
+    One "n a(n)" pair per line; blank lines and lines starting with # are
+    skipped. Any other line is a ValueError naming it, not a skipped line: a
+    reader that drops what it cannot parse reads a damaged b-file as a shorter,
+    intact one.
+    """
+    pairs = []
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        try:
+            if len(fields) != 2:
+                raise ValueError
+            pairs.append((int(fields[0]), int(fields[1])))
+        except ValueError:
+            raise ValueError(f"line {lineno} is not 'n a(n)': {line[:40]!r}") from None
+    if not pairs:
+        raise ValueError("no 'n a(n)' lines in it")
+    return pairs
+
+
+def confirm_bfile(seq_id: str, offset: int, baseline: list[int],
+                  contributed: list[int], text: str | None) -> LiveResult:
+    """confirm_one for the b-file, whose indices have to be right as well.
+
+    The DATA field is a bare list, so a term in the wrong place there is simply
+    a wrong term. A b-file states every index, and those can be wrong on their
+    own: starting from a different offset than the one every a(n) here is
+    numbered from, or skipping a line. Both are checked before the values are.
+    """
+    if text is None:
+        return LiveResult(seq_id, "UNREACHABLE", "could not fetch the b-file from OEIS")
+    try:
+        pairs = parse_bfile(text)
+    except ValueError as exc:
+        return LiveResult(seq_id, "UNREACHABLE", f"could not read the b-file: {exc}")
+    if pairs[0][0] != offset:
+        return LiveResult(seq_id, "REVISED",
+                          f"the OEIS b-file starts at a({pairs[0][0]}); the gate "
+                          f"verified from a({offset})", len(pairs))
+    for i, (n, _) in enumerate(pairs):
+        if n != offset + i:
+            # Inside the baseline this is the record the gate verified against
+            # changing under it; past it, a term here with no row there.
+            return LiveResult(seq_id, "REVISED" if i < len(baseline) else "MISMATCH",
+                              f"the OEIS b-file goes from a({offset + i - 1}) to "
+                              f"a({n})", len(pairs))
+    return confirm_one(seq_id, offset, baseline, contributed, [v for _, v in pairs])
+
+
+def _one_verdict(data: LiveResult, table: LiveResult) -> LiveResult:
+    """Fold the DATA-field and b-file verdicts for one entry into one.
+
+    Both have to pass. A failure of either is the verdict (the more serious one
+    if both fail, with both reasons); otherwise the source carrying more of
+    this repository's terms speaks for the entry, which for a long extension is
+    the b-file.
+    """
+    data = dataclasses.replace(data, detail=f"DATA: {data.detail}")
+    table = dataclasses.replace(table, detail=f"b-file: {table.detail}")
+    bad = [x for x in (data, table) if not x.ok]
+    if bad:
+        worst = min(bad, key=lambda x: LIVE_SEVERITY.index(x.status))
+        return dataclasses.replace(worst, detail="; ".join(x.detail for x in bad))
+    return max((data, table), key=lambda x: (x.n_confirmed, x.n_live))
+
+
+def confirm_live(results: list[Result], snapshot: dict, fetch=None, fetch_b=None,
                  pause: float = 0.5) -> list[LiveResult]:
-    """Run confirm_one over every sequence the offline gate passed.
+    """Check every sequence the offline gate passed against what the OEIS
+    publishes: its b-file (fetched by `fetch_b`) and its DATA field (`fetch`).
+
+    The b-file comes first. Where the OEIS synthesized it from the entry, it is
+    the DATA field with indices added, so checking it checks both and the DATA
+    field is not fetched again. That matters: the search endpoint the DATA
+    field comes from answers automated clients with a bot challenge (HTTP 403
+    from GitHub's runners), while b-files are served. Where the b-file was
+    uploaded, the DATA field is a separate record, and it is fetched and
+    checked as well.
 
     A sequence that failed the gate is left out rather than reported as
     unconfirmed: its own failure is already the answer, and re-stating it as a
     second red line invites fixing the wrong thing.
     """
     fetch = fetch or fetch_published
+    fetch_b = fetch_b or fetch_bfile
     out = []
     for r in results:
         if not r.ok:
             continue
         baseline = list(snapshot.get(r.seq_id, {}).get("data") or [])
-        out.append(confirm_one(r.seq_id, r.offset, baseline, list(r.new_terms),
-                               fetch(r.seq_id)))
+        ours = list(r.new_terms)
+        text = fetch_b(r.seq_id)
         if pause:
             time.sleep(pause)                 # be a polite client
+        table = confirm_bfile(r.seq_id, r.offset, baseline, ours, text)
+        if text is not None and is_synthesized(text):
+            out.append(dataclasses.replace(
+                table, detail=f"b-file, synthesized from DATA: {table.detail}"))
+            continue
+        data = confirm_one(r.seq_id, r.offset, baseline, ours, fetch(r.seq_id))
+        if pause:
+            time.sleep(pause)
+        out.append(_one_verdict(data, table))
     return out
 
 

@@ -78,8 +78,20 @@ def download(cache_dir: str) -> dict[str, str]:
     for name, url in BULK.items():
         path = os.path.join(cache_dir, f"{name}.gz")
         if not os.path.exists(path) or os.path.getsize(path) < 1_000_000:
-            subprocess.run(["curl", "-sL", "-A", UA, url, "-o", path],
-                           check=True, timeout=900)
+            # Download beside the cache and move into place only once curl has
+            # finished. A dump over the size floor is trusted on sight, so one
+            # cut short by the timeout, a dropped connection or Ctrl-C would
+            # sit in the cache and fail every later run inside gzip. And -f, so
+            # an HTTP error is a failed download rather than an error page
+            # saved under the dump's name.
+            part = path + ".part"
+            try:
+                subprocess.run(["curl", "-sfL", "-A", UA, url, "-o", part],
+                               check=True, timeout=900)
+                os.replace(part, path)
+            finally:
+                if os.path.exists(part):
+                    os.remove(part)
         paths[name] = path
     return paths
 
@@ -106,8 +118,9 @@ def load(cache_dir: str) -> dict[str, dict]:
 def assess(name: str, data: str) -> dict | None:
     """Return a candidate record, or None with no explanation.
 
-    Silent rejection is fine here because `survey` reports the funnel counts;
-    the caller can always see how many fell out at each stage.
+    `survey` reports only the sequences that pass, not how many fell out at
+    each stage. To see why a particular sequence was dropped, call this on its
+    name and data directly.
     """
     if not data or EXCLUDE.search(name):
         return None

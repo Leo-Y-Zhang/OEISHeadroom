@@ -87,6 +87,14 @@ class TestRefuses(unittest.TestCase):
         r = confirm(BASE + [13, 22, 34], offset=0)
         self.assertIn("a(6)", r.detail)
 
+    def test_terms_past_ours_do_not_excuse_a_wrong_one_among_ours(self):
+        """AHEAD is every one of our terms published and equal, then more. A
+        live list longer than ours is still compared term by term where the two
+        overlap, or a wrong value would pass as somebody extending further."""
+        r = confirm(BASE + [13, 22, 34] + [55, 89])
+        self.assertEqual(r.status, "MISMATCH")
+        self.assertIn("a(7)", r.detail)
+
     def test_a_changed_baseline_term_is_revised_not_mismatch(self):
         """OEIS correcting data the gate verified against invalidates the gate."""
         r = confirm([1, 2, 4, 5, 8] + OURS)
@@ -120,6 +128,19 @@ class TestParseBfile(unittest.TestCase):
         text = "# header\n\n1 1\n2 -3\r\n  3   123456789012345678901234567890  \n"
         self.assertEqual(parse_bfile(text),
                          [(1, 1), (2, -3), (3, 123456789012345678901234567890)])
+
+    def test_layout_is_not_content(self):
+        """Whitespace-only lines, indented comments, a comment holding numbers,
+        tabs, CRLF and no final newline all read as the same pairs, and a value
+        a thousand digits long is read exactly."""
+        big = 10 ** 999 + 7
+        want = [(1, 1), (2, 2), (3, big)]
+        for text in (f"# A000001 (b-file synthesized from sequence entry)\n"
+                     f"1 1\n2 2\n3 {big}\n",
+                     f"\n   \n  # indented comment\n1\t1\n\t2  2 \n3 {big}",
+                     f"1 1\r\n# 4 4\r\n\r\n2 2\r\n3 {big}\r\n"):
+            with self.subTest(text=text[:24]):
+                self.assertEqual(parse_bfile(text), want)
 
     def test_a_line_that_is_not_n_and_a_n_is_an_error_not_a_skip(self):
         """Skipping it would read a damaged b-file as a shorter, intact one."""
@@ -159,6 +180,22 @@ class TestConfirmBfile(unittest.TestCase):
 
     def test_a_skipped_index_inside_the_baseline_is_revised(self):
         r = self.check(table(BASE + OURS).replace("3 3\n", ""))
+        self.assertEqual(r.status, "REVISED")
+
+    def test_a_gap_just_past_the_baseline_is_in_our_terms(self):
+        """The baseline ends at a(5), so a missing a(6) is a term of ours
+        with no row, not a change to what the gate verified against."""
+        r = self.check(table(BASE + OURS).replace("6 13\n", ""))
+        self.assertEqual(r.status, "MISMATCH")
+        self.assertIn("a(5) to a(7)", r.detail)
+
+    def test_a_repeated_row_is_not_an_extra_term(self):
+        """A last row pasted twice would otherwise read as one term more than
+        was computed here: AHEAD, a pass, for a damaged b-file."""
+        r = self.check(table(BASE + OURS) + "8 34\n")
+        self.assertEqual(r.status, "MISMATCH")
+        self.assertIn("a(8)", r.detail)
+        r = self.check(table(BASE + OURS).replace("3 3\n", "3 3\n3 3\n"))
         self.assertEqual(r.status, "REVISED")
 
     def test_a_changed_baseline_value_is_revised(self):
@@ -255,6 +292,14 @@ class TestConfirmLive(unittest.TestCase):
         out = self.run_live(None, table(BASE + [13, 21, 35], synthesized=True))
         self.assertEqual(out[0].status, "MISMATCH")
         self.assertIn("a(8)", out[0].detail)
+
+    def test_a_b_file_longer_than_ours_is_checked_where_they_overlap(self):
+        """An entry somebody extended further is longer than ours, and so is a
+        b-file with a value pasted in twice, every term of ours a row down in it.
+        The second is a mismatch, not an extension."""
+        out = self.run_live(None, table(BASE + [8] + OURS, synthesized=True))
+        self.assertEqual(out[0].status, "MISMATCH")
+        self.assertIn("a(6)", out[0].detail)
 
     def test_an_uploaded_b_file_does_not_stand_in_for_the_data_field(self):
         """An uploaded b-file is a separate record from DATA; if DATA cannot

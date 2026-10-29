@@ -32,10 +32,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
           python -m pip install ruff
+          python -m pip install pytest==8.4.2
       - name: Lint
         run: ruff check .
       - name: Unit tests
         run: python -m unittest discover -s tests -v
+      - name: Pytest
+        run: pytest -q
       - name: Verify every sequence against its published terms
         # The gate. Runs offline against the committed snapshot of the OEIS
         # data, so it does not silently stop working when the network does.
